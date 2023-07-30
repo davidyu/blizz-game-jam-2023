@@ -66,7 +66,13 @@ ClearOam:
 
     ; Initialize world scroll data 
     ld a, 1
-    ld [wScrollY], a
+    ld [wScrollSpeedY], a
+
+    ld a, 0
+    ld [wRandIndex], a
+
+    ld a, $FF
+    ld [wGeneratedOffsetY], a
 
 Main:
     ; Wait until it's *not* VBlank
@@ -86,24 +92,33 @@ WaitVBlank2:
     srl a ; a / 4
     srl a ; a / 8
 
+    ; don't draw if we've already 
+    ld b, a ; stash a (row to seek to)
+    ld a, [wGeneratedOffsetY]
+    cp b
+    jp z, SkipDrawNextTileLine
+    ld a, b ; unstash a and cache it so we don't draw it next frame
+    ld [wGeneratedOffsetY], a
+
     add a, SCRN_Y_B ; scroll to the bottom
     cp SCRN_VY_B ; check if we need to wrap scroll, we cannot be more than 32 rows down from the top
-    jr c, SeekToTileMapRowInView
+    jr c, SeekToTileMapRow
     sub SCRN_VY_B; wrap back to begin at a = 0/hl = $9800
 
     cp 0 ; if a == 0, just fill the first line (hl = $9800), no need to seek, we'll just underflow!
-    jp z, Fill
+    jp z, DrawNextTileLine
 
-SeekToTileMapRowInView: ; a contains the number of rows we need to skip past $9800
+SeekToTileMapRow: ; a contains the number of rows we need to skip past $9800
     ld bc, SCRN_VX_B ; skip the number of virtual tiles in the tilemap
     add hl, bc ; hl is now pointing to the next row of tilemap we need to write to
     dec a
     cp 0
-    jp nz, SeekToTileMapRowInView
+    jp nz, SeekToTileMapRow
 
-Fill:
+DrawNextTileLine:
     ; there are 20 tiles per line
     ld a, $A
+    push hl
     ld [hli], a
     ld [hli], a
     ld [hli], a
@@ -125,8 +140,19 @@ Fill:
     ld [hli], a
     ld [hli], a
 
+    call Random
+    and $0F ; make sure a is not over 16/0x14
+    add $02 ; offset so we're in the center 16 pixels
+    pop hl
+    ld bc, 0
+    ld c, a
+    add hl, bc
+    ld [hl], $B
+
+SkipDrawNextTileLine:
+
     ; Increment the Y-scroll register to scroll the background down
-    ld a, [wScrollY]
+    ld a, [wScrollSpeedY]
     ld b, a
     ld a, [rSCY]
     add a, b
@@ -180,41 +206,76 @@ Memcopy:
     jp nz, Memcopy
     ret
 
+; Generates an 8 bit PRN in register A
+; @param d: max
+Random:
+    ; load rand index into a
+    ld hl, wRandIndex
+    ld a, [hl]
+
+    ; Check if index is at the end of the buffer
+    cp $FF ; The buffer has 256 values, final value is ignored
+    jr c, .increment
+
+    ; If at the end, reset the index
+    xor a
+    ld [hl], a
+
+.increment
+    inc a
+    ld [hl], a
+
+    ; index into address within RandomBuffer
+    ld hl, RandomBuffer
+    ld bc, 0
+    ld c, a ; we can't ld a into bc directly, so have to initialize it by component
+    add hl, bc
+
+    ; Load the value from RandomBuffer into the a register
+    ld a, [hl]
+
+    ; XOR with the value in the divider register
+    ld hl, rDIV
+    ld b, [hl]
+    xor b
+
+    ret
+
 UpdateKeys:
-  ; Poll half the controller
-  ld a, P1F_GET_BTN
-  call .onenibble
-  ld b, a ; B7-4 = 1; B3-0 = unpressed buttons
+    ; Poll half the controller
+    ld a, P1F_GET_BTN
+    call .onenibble
+    ld b, a ; B7-4 = 1; B3-0 = unpressed buttons
 
-  ; Poll the other half
-  ld a, P1F_GET_DPAD
-  call .onenibble
-  swap a ; A3-0 = unpressed directions; A7-4 = 1
-  xor a, b ; A = pressed buttons + directions
-  ld b, a ; B = pressed buttons + directions
+    ; Poll the other half
+    ld a, P1F_GET_DPAD
+    call .onenibble
+    swap a ; A3-0 = unpressed directions; A7-4 = 1
+    xor a, b ; A = pressed buttons + directions
+    ld b, a ; B = pressed buttons + directions
 
-  ; And release the controller
-  ld a, P1F_GET_NONE
-  ldh [rP1], a
+    ; And release the controller
+    ld a, P1F_GET_NONE
+    ldh [rP1], a
 
-  ; Combine with previous wCurKeys to make wNewKeys
-  ld a, [wCurKeys]
-  xor a, b ; A = keys that changed state
-  and a, b ; A = keys that changed to pressed
-  ld [wNewKeys], a
-  ld a, b
-  ld [wCurKeys], a
-  ret
+    ; Combine with previous wCurKeys to make wNewKeys
+    ld a, [wCurKeys]
+    xor a, b ; A = keys that changed state
+    and a, b ; A = keys that changed to pressed
+    ld [wNewKeys], a
+    ld a, b
+    ld [wCurKeys], a
+    ret
 
 .onenibble
-  ldh [rP1], a ; switch the key matrix
-  call .knownret ; burn 10 cycles calling a known ret
-  ldh a, [rP1] ; ignore value while waiting for the key matrix to settle
-  ldh a, [rP1]
-  ldh a, [rP1] ; this read counts
-  or a, $F0 ; A7-4 = 1; A3-0 = unpressed keys
+    ldh [rP1], a ; switch the key matrix
+    call .knownret ; burn 10 cycles calling a known ret
+    ldh a, [rP1] ; ignore value while waiting for the key matrix to settle
+    ldh a, [rP1]
+    ldh a, [rP1] ; this read counts
+    or a, $F0 ; A7-4 = 1; A3-0 = unpressed keys
 .knownret
-  ret
+    ret
 
 Tiles:
 	dw `33333333
@@ -297,7 +358,7 @@ Tiles:
 	dw `22322232
 	dw `23232323
 	dw `33333333
-    ; pixels $A
+    ; ocean tile $A
 	dw `22222222
 	dw `22222222
 	dw `22222222
@@ -306,6 +367,15 @@ Tiles:
 	dw `22222222
 	dw `22222222
 	dw `22222222
+    ; bubble tile $B
+    dw `00000000
+    dw `00033000
+    dw `00322300
+    dw `03222230
+    dw `03222230
+    dw `00322300
+    dw `00033000
+    dw `00000000
 	; Paste your logo here:
 TilesEnd:
 
@@ -341,6 +411,25 @@ Tilemap:
 	db $04, $09, $09, $09, $09, $09, $09, $09, $09, $09, $09, $09, $09, $07, $03, $03, $03, $03, $03, $03, 0,0,0,0,0,0,0,0,0,0,0,0
 TilemapEnd:
 
+RandomBuffer:
+    db $6F, $91, $8F, $5C, $5F, $E5, $C3, $1B, $19, $AB, $65, $6B, $25, $76, $8C, $12
+    db $DB, $A4, $0A, $CC, $4D, $D9, $BF, $4F, $63, $3D, $8A, $72, $DD, $C6, $D3, $E1
+    db $56, $E9, $06, $7A, $5A, $93, $BA, $C2, $45, $5E, $7D, $61, $5D, $31, $AF, $DF
+    db $00, $30, $38, $3E, $2C, $47, $FF, $EB, $24, $A2, $46, $9D, $0C, $66, $E8, $C4
+    db $79, $C1, $A0, $FB, $1A, $95, $77, $48, $ED, $B4, $67, $F9, $11, $54, $D8, $D1
+    db $D5, $F2, $55, $34, $4E, $7E, $9A, $D4, $29, $5B, $20, $8D, $3F, $71, $1D, $81
+    db $3B, $88, $08, $CE, $78, $10, $7F, $04, $73, $53, $B5, $75, $EC, $D2, $9C, $A6
+    db $39, $6A, $0B, $9E, $05, $28, $0F, $B8, $83, $99, $6C, $9B, $B6, $3C, $B0, $82
+    db $CB, $90, $86, $D0, $E6, $74, $A5, $94, $BE, $A9, $57, $C0, $62, $FD, $2F, $22
+    db $13, $B7, $07, $59, $32, $BC, $C9, $F8, $09, $3A, $F0, $87, $4C, $6D, $49, $23
+    db $A3, $B1, $8B, $CF, $DA, $AE, $FA, $1C, $8E, $1F, $0E, $F1, $17, $E7, $AA, $41
+    db $4B, $70, $FC, $01, $EF, $03, $43, $18, $E2, $37, $42, $C8, $9F, $A8, $33, $96
+    db $0D, $E4, $27, $35, $7C, $16, $7B, $A7, $DE, $CA, $44, $80, $2A, $15, $F3, $14
+    db $F7, $C7, $AC, $E0, $2B, $51, $2E, $89, $50, $BD, $F6, $2D, $D7, $DC, $98, $AD
+    db $6E, $E3, $52, $92, $36, $40, $B9, $BB, $B2, $26, $C5, $02, $84, $64, $F4, $EE
+    db $F5, $97, $58, $85, $4A, $B3, $EA, $A1, $CD, $D6, $FE, $1E, $69, $68, $21, $60
+RandomBufferEnd:
+
 SECTION "Counter", WRAM0
 wFrameCounter: db
 
@@ -349,5 +438,8 @@ wCurKeys: db
 wNewKeys: db
 
 SECTION "Scrolling and Worldgen", WRAM0
-wScrollY: db
-wOffset: db
+wScrollSpeedY: db
+wGeneratedOffsetY: db
+
+SECTION "Random", WRAM0
+wRandIndex: db
