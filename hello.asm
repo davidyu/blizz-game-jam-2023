@@ -65,14 +65,22 @@ ClearOam:
     ld [wFrameCounter], a
 
     ; Initialize world scroll data 
-    ld a, 1
+    ld a, 2
     ld [wScrollSpeedY], a
+    ld a, 0
+    ld [wTotalDepth], a
 
     ld a, 0
     ld [wRandIndex], a
 
     ld a, $FF
     ld [wGeneratedOffsetY], a
+
+    ld hl, 0
+    call WriteTotalDepth
+
+    ld a, 0
+    ld [wVelocityY], a
 
 Main:
     ; Wait until it's *not* VBlank
@@ -96,7 +104,7 @@ WaitVBlank2:
     ld b, a ; stash a (row to seek to)
     ld a, [wGeneratedOffsetY]
     cp b
-    jp z, SkipDrawNextTileLine
+    jp z, DrawNextTileLineEnd
     ld a, b ; unstash a and cache it so we don't draw it next frame
     ld [wGeneratedOffsetY], a
 
@@ -140,16 +148,33 @@ DrawNextTileLine:
     ld [hli], a
     ld [hli], a
 
+    ; increment total depth
+    call LoadTotalDepth
+
+    ld a, 1 ; increase depth by 1 each time we draw a tile
+    ld bc, 0
+    ld c, a
+    add hl, bc
+
+    call WriteTotalDepth
+
+    ; if total depth is a multiple of 4, then draw a bubble sprite, otherwise the ocean is too dense with bubbles
+    ld a, l
+    and a, %00000011 ; Mask out all but the two least significant bits
+    pop hl
+    jr nz, DrawNextTileLineEnd ; draw bubble if depth is divisible by 4
+
+    push hl
     call Random
+    pop hl
     and $0F ; make sure a is not over 16/0x14
     add $02 ; offset so we're in the center 16 pixels
-    pop hl
     ld bc, 0
     ld c, a
     add hl, bc
     ld [hl], $B
 
-SkipDrawNextTileLine:
+DrawNextTileLineEnd:
 
     ; Increment the Y-scroll register to scroll the background down
     ld a, [wScrollSpeedY]
@@ -161,6 +186,8 @@ SkipDrawNextTileLine:
     ; Check the current keys every frame and move left or right.
     call UpdateKeys
 
+    call UpdatePhysix
+
     ; First, check if the left button is pressed.
 CheckLeft:
     ld a, [wCurKeys]
@@ -170,6 +197,7 @@ CheckLeft:
 Left:
     ; Move the paddle one pixel to the left.
     ld a, [_OAMRAM + 1]
+    dec a
     dec a
     ; If we've already hit the edge of the playfield, don't move.
     cp a, 15
@@ -185,6 +213,7 @@ CheckRight:
 Right:
     ; Move the paddle one pixel to the right.
     ld a, [_OAMRAM + 1]
+    inc a
     inc a
     ; If we've already hit the edge of the playfield, don't move.
     cp a, 105
@@ -207,7 +236,6 @@ Memcopy:
     ret
 
 ; Generates an 8 bit PRN in register A
-; @param d: max
 Random:
     ; load rand index into a
     ld hl, wRandIndex
@@ -275,6 +303,33 @@ UpdateKeys:
     ldh a, [rP1] ; this read counts
     or a, $F0 ; A7-4 = 1; A3-0 = unpressed keys
 .knownret
+    ret
+
+
+UpdatePhysix:
+    DEF BUOYANCY EQU 1
+    ld a, [_OAMRAM] ; bouyant forces forces you to go up
+    sub BUOYANCY
+    ld [_OAMRAM], a
+
+    ; ld a, [wVelocityY]
+    ; add GRAVITY
+    ; ld [wVelocityY], a
+    ret
+
+
+LoadTotalDepth:
+    ld hl, wTotalDepth ; Load wTotalDepth into hl
+    ld a, [hl+]
+    ld h, [hl]
+    ld l, a
+    ret
+
+WriteTotalDepth:
+    ld a, l
+    ld [wTotalDepth], a
+    ld a, h
+    ld [wTotalDepth+1], a
     ret
 
 Tiles:
@@ -437,9 +492,14 @@ SECTION "Input Variables", WRAM0
 wCurKeys: db
 wNewKeys: db
 
+SECTION "Dan", WRAM0
+wVelocityY: db
+
 SECTION "Scrolling and Worldgen", WRAM0
 wScrollSpeedY: db
 wGeneratedOffsetY: db
+wTotalDepth: dw
+wCurrentDepth: dw ; unused
 
 SECTION "Random", WRAM0
 wRandIndex: db
