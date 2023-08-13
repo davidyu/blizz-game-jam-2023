@@ -312,9 +312,40 @@ UpdatePhysix:
     sub BUOYANCY
     ld [_OAMRAM], a
 
-    ; ld a, [wVelocityY]
-    ; add GRAVITY
-    ; ld [wVelocityY], a
+    ; in b, store x
+    ld a, [_OAMRAM + 1] ; x
+    sub a, 8
+    ld b, a
+
+    ; in c, store y - scroll offset
+    ld a, [_OAMRAM]
+    sub a, 8
+    ld e, a ; stash y - 8
+    ld a, [rSCY]; a := scroll offset
+    ld c, a ; stash scroll offset
+    ld a, e
+    sub a, c ; a := y - scroll offset
+    ld c, a
+
+    call GetTileByPixel
+    ld a, [hl]
+    call IsBubbleTile
+    jr nz, DecelerateY
+
+    ld a, 5
+    ld [wVelocityY], a
+    ld a, [wVelocityY]
+    ld b, a
+    ld a, [_OAMRAM]
+    add a, b
+    ld [_OAMRAM], a   
+
+DecelerateY:
+    ld a, [wVelocityY]
+    cp 0
+    ret z
+    dec a
+    ld [wVelocityY], a
     ret
 
 
@@ -330,6 +361,44 @@ WriteTotalDepth:
     ld [wTotalDepth], a
     ld a, h
     ld [wTotalDepth+1], a
+    ret
+
+; Convert a pixel position to a tilemap address
+; hl = $9800 + X + (Y minus SCROLL) * SCRN_VX_B
+; @param b: X
+; @param c: Y
+; @return hl: tile address
+GetTileByPixel:
+    ; After this we want to multiply the Y position by 32 (SCRN_VX_B).
+    ; These operations effectively cancel out so we only need to mask the Y value so it is a multiple of 8
+    ld a, c
+    and a, %11111000
+    ld l, a
+    ld h, 0
+    ; Now we have the y position * 8 in hl - is this true?
+    add hl, hl ; y position * 16
+    add hl, hl ; y position * 32
+    ; Convert the X position to an offset.
+    ld a, b
+    srl a ; a / 2
+    srl a ; a / 4
+    srl a ; a / 8
+    ; Add the two offsets together.
+    add a, l
+    ld l, a
+    adc a, h
+    sub a, l
+    ld h, a
+    ; Add the offset to the tilemap's base address, and we are done!
+    ld bc, $9800
+    add hl, bc
+    ret
+
+; @param a: tile ID
+; @return z: set if a is a wall.
+IsBubbleTile:
+    cp a, $0B
+    ret z
     ret
 
 Tiles:
