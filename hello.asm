@@ -1,5 +1,4 @@
 INCLUDE "hardware.inc"
-INCLUDE "rand.asm"
 
 SECTION "Header", ROM0[$100]
     jp EntryPoint
@@ -324,7 +323,12 @@ UpdatePhysix:
     ld a, [rSCY]; a := scroll offset
     ld c, a ; stash scroll offset
     ld a, e
-    sub a, c ; a := y - scroll offset
+    add a, c ; a := y - scroll offset
+    cp SCRN_VY - 1
+    jr c, BeforeCallGetTileByPixel
+    sub SCRN_VY - 1
+
+BeforeCallGetTileByPixel:
     ld c, a
 
     call GetTileByPixel
@@ -334,13 +338,14 @@ UpdatePhysix:
 
     ld a, 5
     ld [wVelocityY], a
+
+DecelerateY:
     ld a, [wVelocityY]
     ld b, a
     ld a, [_OAMRAM]
     add a, b
     ld [_OAMRAM], a   
 
-DecelerateY:
     ld a, [wVelocityY]
     cp 0
     ret z
